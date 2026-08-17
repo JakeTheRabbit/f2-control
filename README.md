@@ -54,3 +54,5 @@ The add-on bakes its code at build time, so when a new version ships, use the ad
 *The add-on source is developed in the main monorepo at `addons/f2_control/` and published here on
 each release (`scripts/publish_addon.sh`). File issues on the
 [main repo](https://github.com/JakeTheRabbit/HA-Irrigation-Strategy/issues).*
+
+> **This repo is free. My 2am dryback debugging is not.** If it saved you a crop, a weekend, or a nervous breakdown — [buy the rabbit a bag of nutes](https://github.com/sponsors/JakeTheRabbit). If it didn't, keep your money. I respect a tight nutrient budget.

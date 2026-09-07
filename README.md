@@ -1,58 +1,33 @@
-# F2 Control — Home Assistant add-on repository
+# Crop Steering Controller for Home Assistant
 
-> **This repo is free. My 2am dryback debugging is not.** If it saved you a crop, a weekend, or a nervous breakdown — [buy the rabbit a bag of nutes](https://github.com/sponsors/JakeTheRabbit). If it didn't, keep your money. I respect a tight nutrient budget.
+The companion irrigation controller for [Crop Steering](https://github.com/JakeTheRabbit/HA-Irrigation-Strategy). This repository supports existing Home Assistant app installations and receives the matching controller release.
 
-One-click install for the **f2-control** crop-steering engine — the autonomous P0→P1→P2→P3
-irrigation controller from [HA-Irrigation-Strategy](https://github.com/JakeTheRabbit/HA-Irrigation-Strategy).
+**[Try the interactive demo](https://jaketherabbit.github.io/HA-Irrigation-Strategy/dashboard.html?demo=1)** · **[Install and upgrade guide](https://github.com/JakeTheRabbit/HA-Irrigation-Strategy/blob/main/docs/INSTALL.md)**
 
-## Install (one-click, by URL)
+![Native Crop Steering workspace](https://raw.githubusercontent.com/JakeTheRabbit/HA-Irrigation-Strategy/main/img/operator-dashboard.png)
 
-1. In Home Assistant: **Settings → Add-ons → Add-on Store → ⋮ (top-right) → Repositories**.
-2. Paste this URL and **Add**:
-   ```
-   https://github.com/JakeTheRabbit/f2-control
-   ```
-3. Close the dialog — **F2 Control** now appears in the store. Open it → **Install**.
+## Install
 
-> This is the *add-on repository* — paste the URL above into the **Add-on Store → Repositories**
-> dialog (not HACS, and not a subfolder URL).
+1. [Install the Crop Steering integration through HACS](https://my.home-assistant.io/redirect/hacs_repository/?owner=JakeTheRabbit&repository=HA-Irrigation-Strategy&category=integration), then restart Home Assistant and add Crop Steering in Devices & services.
+2. [Add this controller app repository](https://my.home-assistant.io/redirect/supervisor_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2FJakeTheRabbit%2Ff2-control). Install **Crop Steering Controller**, review its options and start it.
+3. Open **Crop Steering** in the sidebar. Use **Rooms & setup** to map each room's pump, mainline, valves and probes, then enter pot size, plant count and dripper output. The controller adopts the integration's mapping.
+4. Check fresh sensor readings, controller heartbeat, current setpoints and safety holds. Commission actual water delivery before enabling irrigation.
 
-## Install the integration first
+Integration **2.13.0** pairs with controller **0.12.0**. Home Assistant OS/Supervised provides the app store and internal authentication. No token needs to be committed to a file.
 
-The engine drives **only** the hardware you map in the companion **Crop Steering integration**
-(entities + setup wizard + dashboards) — install it via HACS from the main repo *before* this
-add-on, and map your pump, mainline and per-zone valves + sensors there. The add-on reads that map
-from the integration; there are no facility defaults, so an add-on installed against no integration
-holds safe (never waters) until it's set up. Full step-by-step:
-**https://github.com/JakeTheRabbit/HA-Irrigation-Strategy** → `docs/AGENT_INSTALL.md`.
+## Upgrade an existing controller
 
-## After installing
+Use **Update** on the controller you already installed. Keep its repository and app identity so Supervisor preserves `/data/state.json`, options and counters. Installing another copy from the main project repository creates a separate controller instance.
 
-1. **Kill switch.** Create `input_boolean.f2_control_enabled` (a Helper, or deploy
-   `f2_control/f2_control_package.yaml` to `/config/packages` then reload). **OFF = safe** — the
-   add-on reads, computes and notifies but never opens a valve.
-2. **Configure** (add-on → Configuration). Everything here is optional:
-   - `lights_on_hour` / `lights_off_hour` — fall back to these only until the integration's light
-     entities are read.
-   - `notify_service` — **blank = in-app persistent notifications only** (no phone push). There is
-     no built-in default; it never texts a stranger's device.
-   - `feed_ec_sensor` / `feed_ph_sensor` — your reservoir probes for the source-water gate. **Empty
-     by default = that half of the gate is off** (no facility fallback). Set your own entity ids to
-     enable feed gating.
-   - `hold_entities` — a list of `input_boolean`/`switch` ids that pause irrigation while ON (tank
-     fill, nutrient dosing, flush). Empty by default.
+Update the companion integration as well and restart Home Assistant. A plain controller restart reuses the old image; a published Update or local-source Rebuild loads the new code. Verify versions, heartbeat and restored settings afterwards. Do not re-enter defaults over your current setpoints.
 
-   The token is automatic (`homeassistant_api: true`).
-3. **Start** it. The log shows `starting | … | token present: True`, then the effective timezone.
-4. Watch a photoperiod with the kill switch OFF, then flip it ON to go live.
+Feed EC/pH sources and hold entities remain installation-specific options. Empty feed-probe mappings disable those particular gates; map your own reservoir probes to use them. Weekly water is a controller delivery estimate, with partial-history coverage after upgrade, rather than measured flow.
 
-## Updating
+## Source and documentation
 
-The add-on bakes its code at build time, so when a new version ships, use the add-on's **Update**
-(or **⋮ → Rebuild**) — a plain Restart keeps the old code.
+This repository contains the packaged controller. Development happens in [HA-Irrigation-Strategy](https://github.com/JakeTheRabbit/HA-Irrigation-Strategy); release tooling copies only tracked runtime files and the current dashboard.
 
----
-
-*The add-on source is developed in the main monorepo at `addons/f2_control/` and published here on
-each release (`scripts/publish_addon.sh`). File issues on the
-[main repo](https://github.com/JakeTheRabbit/HA-Irrigation-Strategy/issues).*
+- [Controller changelog](f2_control/CHANGELOG.md)
+- [Controller operation](f2_control/DOCS.md)
+- [Whole-grow planning](https://github.com/JakeTheRabbit/HA-Irrigation-Strategy/blob/main/docs/GROW_PLANS.md)
+- [Validated features and limits](https://github.com/JakeTheRabbit/HA-Irrigation-Strategy/blob/main/docs/FEATURE_MATRIX.md)

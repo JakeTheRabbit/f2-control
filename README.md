@@ -13,7 +13,7 @@ The companion irrigation controller for [Crop Steering](https://github.com/JakeT
 3. Open **Crop Steering** in the sidebar. Use **Rooms & setup** to map each room's pump, mainline, valves and probes, then enter pot size, plant count and dripper output. The controller adopts the integration's mapping.
 4. Check fresh sensor readings, controller heartbeat, current setpoints and safety holds. Commission actual water delivery before enabling irrigation.
 
-Integration **2.13.0** pairs with controller **0.12.0**. Home Assistant OS/Supervised provides the app store and internal authentication. No token needs to be committed to a file.
+Integration **2.13.2** pairs with controller **0.12.1**. Home Assistant OS/Supervised provides the app store and internal authentication. No token needs to be committed to a file.
 
 ## Upgrade an existing controller
 

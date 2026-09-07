@@ -13,7 +13,7 @@ The companion irrigation controller for [Crop Steering](https://github.com/JakeT
 3. Open **Crop Steering** in the sidebar. Use **Rooms & setup** to map each room's pump, mainline, valves and probes, then enter pot size, plant count and dripper output. The controller adopts the integration's mapping.
 4. Check fresh sensor readings, controller heartbeat, current setpoints and safety holds. Commission actual water delivery before enabling irrigation.
 
-Integration **2.15.0** pairs with controller **0.13.1**. Home Assistant OS/Supervised provides the app store and internal authentication. No token needs to be committed to a file.
+Integration **2.16.0** pairs with controller **0.13.2**. Home Assistant OS/Supervised provides the app store and internal authentication. No token needs to be committed to a file.
 
 ## Upgrade an existing controller
 
@@ -26,6 +26,8 @@ Feed EC/pH sources and hold entities remain installation-specific options. Empty
 The workspace now previews manual edits on a combined VWC/EC graph, compares recorded runs against daily target references, and separates zone water, average per-plant water and substrate capacity. Runtime estimates include controller limits; historical delivery totals are preserved.
 
 Save user-authored plans in the browser's room-scoped Recipe library and load them as reviewed local drafts. Older installations' maximum-shot-duration entity names are supported without changing entity IDs.
+
+The overview includes graphical tank/pump status and last irrigation events. The public demo includes synthetic recipes and prior runs. An optional [local MCP connector](https://github.com/JakeTheRabbit/HA-Irrigation-Strategy/blob/main/docs/MCP.md) supports LLM-assisted configuration.
 
 ## Source and documentation
 

@@ -13,7 +13,7 @@ The companion irrigation controller for [Crop Steering](https://github.com/JakeT
 3. Open **Crop Steering** in the sidebar. Use **Rooms & setup** to map each room's pump, mainline, valves and probes, then enter pot size, plant count and dripper output. The controller adopts the integration's mapping.
 4. Check fresh sensor readings, controller heartbeat, current setpoints and safety holds. Commission actual water delivery before enabling irrigation.
 
-Integration **2.14.0** pairs with controller **0.13.0**. Home Assistant OS/Supervised provides the app store and internal authentication. No token needs to be committed to a file.
+Integration **2.15.0** pairs with controller **0.13.1**. Home Assistant OS/Supervised provides the app store and internal authentication. No token needs to be committed to a file.
 
 ## Upgrade an existing controller
 
@@ -24,6 +24,8 @@ Update the companion integration as well and restart Home Assistant. A plain con
 Feed EC/pH sources and hold entities remain installation-specific options. Empty feed-probe mappings disable those particular gates; map your own reservoir probes to use them. Weekly water is a controller delivery estimate, with partial-history coverage after upgrade, rather than measured flow.
 
 The workspace now previews manual edits on a combined VWC/EC graph, compares recorded runs against daily target references, and separates zone water, average per-plant water and substrate capacity. Runtime estimates include controller limits; historical delivery totals are preserved.
+
+Save user-authored plans in the browser's room-scoped Recipe library and load them as reviewed local drafts. Older installations' maximum-shot-duration entity names are supported without changing entity IDs.
 
 ## Source and documentation
 

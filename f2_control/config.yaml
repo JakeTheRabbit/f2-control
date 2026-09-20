@@ -1,5 +1,5 @@
 name: Crop Steering Controller
-version: "0.13.3"
+version: "0.14.0"
 slug: f2_control
 description: >-
   Autonomous crop steering for Home Assistant. Runs the daily P0-P1-P2-P3 dryback
@@ -37,6 +37,9 @@ options:
   flow_lps: 0.02
   loop_seconds: 60
   rediscover_seconds: 300
+  cf_account_id: ""
+  cf_api_token: ""
+  cf_gateway_id: ""
 schema:
   num_zones: int
   lights_on_hour: float
@@ -53,3 +56,6 @@ schema:
   flow_lps: float
   loop_seconds: float
   rediscover_seconds: float
+  cf_account_id: str?
+  cf_api_token: password?
+  cf_gateway_id: str?

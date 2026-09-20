@@ -244,11 +244,13 @@ class Controller:
             }
         hw = o.get("hardware")
         if not hw:
-            valves = {int(k): v for k, v in (desc.get("valves") or {}).items()}
-            if desc.get("pump") and desc.get("mainline") and valves:
+            valves = {int(k): v for k, v in (desc.get("valves") or {}).items() if v}
+            if valves:
+                # A zone needs its valve. Pump and mainline are used when mapped and skipped when
+                # not: a tent with one smart plug is a complete room (see _execute_shot).
                 hw = {
-                    "pump": desc["pump"],
-                    "mainline": desc["mainline"],
+                    "pump": desc.get("pump") or None,
+                    "mainline": desc.get("mainline") or None,
                     "valves": valves,
                 }
             else:
@@ -273,11 +275,11 @@ class Controller:
             opt_lon=self._opt_lon,
             opt_loff=self._opt_loff,
         )
-        if not default_room.hw.get("pump"):
+        if not default_room.hw.get("valves"):
             log(
-                "config: default room has NO hardware mapped — holding safe. Set the pump, "
-                "mainline and per-zone valves in the Crop Steering integration (or the add-on "
-                "`hardware` option)."
+                "config: default room has NO hardware mapped — holding safe. Map each zone's valve "
+                "(and the pump and mainline, if the room has them) in the Crop Steering integration "
+                "(or the add-on `hardware` option)."
             )
         self.rooms = [default_room]
         # ---- additional rooms: discovered from the integration's published descriptors ----
@@ -384,9 +386,9 @@ class Controller:
                     "mainline": a.get("mainline"),
                     "valves": valves,
                 }
-                if not (hw["pump"] and hw["mainline"] and valves and zones):
+                if not (valves and zones):
                     log(
-                        f"room '{a.get('slug')}' engine_config incomplete — skipped (pump/mainline/valves/zones missing)"
+                        f"room '{a.get('slug')}' engine_config incomplete — skipped (no zone valves or zones)"
                     )
                     continue
                 rooms.append(
@@ -543,13 +545,13 @@ class Controller:
         self._last_discovery = now
         # (1) resolve the default room's hardware/zones if it started unmapped (HA was down)
         default = self.rooms[0]
-        if default.slug == "default" and not default.hw.get("pump"):
+        if default.slug == "default" and not default.hw.get("valves"):
             desc = self._default_descriptor()
-            valves = {int(k): v for k, v in (desc.get("valves") or {}).items()}
-            if desc.get("pump") and desc.get("mainline") and valves:
+            valves = {int(k): v for k, v in (desc.get("valves") or {}).items() if v}
+            if valves:
                 default.hw = {
-                    "pump": desc["pump"],
-                    "mainline": desc["mainline"],
+                    "pump": desc.get("pump") or None,
+                    "mainline": desc.get("mainline") or None,
                     "valves": valves,
                 }
                 if not default.zones:
@@ -565,7 +567,7 @@ class Controller:
                     }
                     self._load_room_state(default)
                 log(
-                    f"config: default room hardware now mapped ({desc['pump']}) — resuming"
+                    f"config: default room hardware now mapped ({desc.get('pump') or 'valves only'}) — resuming"
                 )
         # (2) add any newly-published additional rooms
         known = {r.slug for r in self.rooms}
@@ -692,12 +694,8 @@ class Controller:
                             "the kill switch back ON.",
                         )
                     continue
-                if active and (
-                    not desired_hw["pump"]
-                    or not desired_hw["mainline"]
-                    or any(not valves.get(z) for z in zone_ids)
-                ):
-                    raise ValueError("Active setup has incomplete hardware mapping")
+                if active and any(not valves.get(z) for z in zone_ids):
+                    raise ValueError("Active setup has a zone without a valve")
                 zones = {
                     z: {
                         "vwc": f"sensor.crop_steering_{room.prefix}vwc_zone_{z}",
@@ -908,14 +906,18 @@ class Controller:
             return default
         return str(v).lower() in ("on", "true", "open", "1", "home")
 
-    def _read_sensor(self, entity, lo=0.0, hi=200.0, max_age_min=20):
-        v, _, lu = ha_get(entity)
+    def _read_sensor(self, entity, lo=0.0, hi=200.0, max_age_min=20, to_ms_cm=False):
+        v, attrs, lu = ha_get(entity)
         if v in (None, "unknown", "unavailable", ""):
             return None
         try:
             f = float(v)
         except Exception:
             return None
+        if to_ms_cm:  # an EC probe in uS/cm (micro sign, Greek mu or plain "u") is a thousandth of that in mS/cm
+            unit = str((attrs or {}).get("unit_of_measurement") or "").lower().replace(" ", "")
+            if unit in ("µs/cm", "μs/cm", "us/cm"):
+                f /= 1000.0
         if not math.isfinite(f) or f < lo or f > hi:
             return None
         try:
@@ -934,7 +936,7 @@ class Controller:
     def _read_feed_ec(self, room):
         if not room.feed_ec_sensor:
             return None
-        feed = self._read_sensor(room.feed_ec_sensor, lo=0, hi=20)
+        feed = self._read_sensor(room.feed_ec_sensor, lo=0, hi=20, to_ms_cm=True)
         if feed is not None:
             lo = self._num(f"number.crop_steering_{room.prefix}irrigation_ec_min", 0)
             hi = self._num(f"number.crop_steering_{room.prefix}irrigation_ec_max", 0)
@@ -1190,6 +1192,23 @@ class Controller:
                 self._alert(f"auto_{room.slug}_z{zone}", f"{room.slug} Z{zone} auto setpoints frozen",
                             auto_setpoints.frozen_reason(learn))
             self._save_state()
+        # In P2 the judge manages the maintenance shot: asked once an hour, it may nudge the P2 shot
+        # size (pore EC) and the working peak, one bounded step per lever per grow-day. It cannot fire,
+        # size or delay a shot, and a call that fails or takes too long changes nothing.
+        stamp = now.strftime("%Y-%m-%dT%H")
+        if (enabled and not planned and jev != "disabled" and lights_on and st["phase"] == "P2"
+                and auto_setpoints.jev_due(learn, stamp)):
+            verdict = jev_policy.verdicts(jev_policy.call(
+                self._cf[0], self._cf[1],
+                auto_setpoints.evidence(learn, "P2", snap.vwc, p.p1_target, snap.ec, p.ec_target_p2,
+                                        self._read_feed_ec(room), p.p2_shot_size, st["shots"]),
+                gateway=self._cf[2] or None, timeout=5.0))
+            jev = jev_state[zone] = "ok" if verdict is not None else "unavailable"
+            asked = auto_setpoints.jev_verdict(learn, stamp, verdict, p.p2_shot_size, now.strftime("%H:%M"))
+            for suffix, value in asked.items():
+                self._auto_write(room, zone, suffix, p.p2_shot_size, value, learn, now, by="Jev")
+            log(f"[{room.slug}] Z{zone} Jev P2: {learn['jev']['last']}")
+            self._save_state()
         if enabled and not planned:
             current = {
                 "p1_target_vwc": p.p1_target, "field_capacity": p.field_capacity,
@@ -1215,13 +1234,16 @@ class Controller:
         state, attrs = auto_setpoints.status(learn, enabled)
         if enabled and planned:
             state, attrs["frozen_reason"] = "frozen", "an armed grow plan owns this room's targets"
+        suffixes = auto_setpoints.MANAGED + (auto_setpoints.JEV_MANAGED if jev != "disabled" else ())
         attrs.update(
-            jev=jev, updated=now.isoformat(), engine="f2-control", friendly_name=f"Zone {zone} auto setpoints",
-            managed=[f"number.crop_steering_{room.prefix}zone_{zone}_{s}" for s in auto_setpoints.MANAGED],
+            jev=jev, jev_last=learn["jev"]["last"], jev_changed_today=learn["jev"]["changed"],
+            working_peak_adjust=learn["peak_adj"],
+            updated=now.isoformat(), engine="f2-control", friendly_name=f"Zone {zone} auto setpoints",
+            managed=[f"number.crop_steering_{room.prefix}zone_{zone}_{s}" for s in suffixes],
         )
         ha_set(f"sensor.crop_steering_{room.prefix}zone_{zone}_auto_setpoints", state, attrs)
 
-    def _auto_write(self, room, zone, suffix, old, value, learn, now):
+    def _auto_write(self, room, zone, suffix, old, value, learn, now, by="auto"):
         entity = f"number.crop_steering_{room.prefix}zone_{zone}_{suffix}"
         if ha_get(entity)[0] in (None, "unknown", "unavailable", ""):
             return  # no per-zone number on this install: room-level values are the operator's, never ours
@@ -1233,8 +1255,8 @@ class Controller:
         ha_call("number", "set_value", entity_id=entity, value=value)
         learn["last_change"] = f"{now.strftime('%H:%M')} {suffix} {old:g} -> {value:g}"
         tag = "" if room.prefix == "" else f"{room.slug} "
-        self._activity.insert(0, f"{now.strftime('%H:%M')} {tag}Z{zone} auto {suffix} {old:g} -> {value:g}"[:120])
-        log(f"[{room.slug}] Z{zone} auto {suffix} {old:g} -> {value:g}")
+        self._activity.insert(0, f"{now.strftime('%H:%M')} {tag}Z{zone} {by} {suffix} {old:g} -> {value:g}"[:120])
+        log(f"[{room.slug}] Z{zone} {by} {suffix} {old:g} -> {value:g}")
 
     # ---------- room status (On / Off) ----------
     def _room_active(self, room):
@@ -1318,10 +1340,10 @@ class Controller:
         if fault:
             return fault
         hw = room.hw
-        if not (hw.get("pump") and hw.get("mainline") and hw["valves"].get(zone)):
+        if not hw["valves"].get(zone):
             return (
-                "no hardware mapped — set the pump, mainline and this zone's valve in the "
-                "Crop Steering integration (or the add-on `hardware` option)"
+                "no hardware mapped — set this zone's valve (and the pump and mainline, if the room "
+                "has them) in the Crop Steering integration (or the add-on `hardware` option)"
             )
         if not self._on(room.enable_flag, False):
             return "f2-control disabled (kill switch off)"
@@ -1654,31 +1676,38 @@ class Controller:
         try:
             # OPEN sequence — FAIL CLOSED: if any service call errors, cut what's on, alert, and DO NOT count the shot
             # (otherwise daily_vol / last_shot lie after an auth/entity/service failure and a zone silently starves).
-            if not ha_call("switch", "turn_on", entity_id=hw["pump"]):
+            # Pump and mainline are optional (a one-switch tent has neither): each is sequenced when
+            # mapped and skipped, with its lead time, when not. The valve is always required.
+            pump, mainline = hw.get("pump"), hw.get("mainline")
+            if pump and not ha_call("switch", "turn_on", entity_id=pump):
                 self._alert(
                     f"hw_{room.slug}_z{zone}",
                     "Shot aborted — pump command failed",
                     f"{room.slug} zone {zone}: pump turn_on returned an error. No water delivered, shot NOT counted.",
                 )
                 return
-            time.sleep(2)
-            if not ha_call("switch", "turn_on", entity_id=hw["mainline"]):
-                ha_call("switch", "turn_off", entity_id=hw["pump"])
+            if pump:
+                time.sleep(2)
+            if mainline and not ha_call("switch", "turn_on", entity_id=mainline):
+                if pump:
+                    ha_call("switch", "turn_off", entity_id=pump)
                 self._alert(
                     f"hw_{room.slug}_z{zone}",
                     "Shot aborted — mainline command failed",
                     f"{room.slug} zone {zone}: mainline turn_on failed. Pump cut. No water, shot NOT counted.",
                 )
                 return
-            time.sleep(1)
+            if mainline:
+                time.sleep(1)
             valve_started = time.monotonic()
             if not ha_call("switch", "turn_on", entity_id=valve):
-                ha_call("switch", "turn_off", entity_id=hw["mainline"])
-                ha_call("switch", "turn_off", entity_id=hw["pump"])
+                for upstream in (mainline, pump):
+                    if upstream:
+                        ha_call("switch", "turn_off", entity_id=upstream)
                 self._alert(
                     f"hw_{room.slug}_z{zone}",
                     "Shot aborted — valve command failed",
-                    f"{room.slug} zone {zone}: valve {valve} turn_on failed. Pump + mainline cut. No water, shot NOT counted.",
+                    f"{room.slug} zone {zone}: valve {valve} turn_on failed. Anything upstream was cut. No water, shot NOT counted.",
                 )
                 return
             elapsed, aborted = self._wait_shot(
@@ -1693,16 +1722,16 @@ class Controller:
             # Delivery is estimated, not flow-metered. Include the acknowledgement
             # interval conservatively because the exact physical close time is unknown.
             elapsed = max(elapsed, time.monotonic() - valve_started)
-            time.sleep(1)
-            close_ok = (
-                ha_call("switch", "turn_off", entity_id=hw["mainline"]) and close_ok
-            )
-            close_ok = ha_call("switch", "turn_off", entity_id=hw["pump"]) and close_ok
+            upstream = [e for e in (mainline, pump) if e]  # closed valve first, then back up the line
+            if upstream:
+                time.sleep(1)
+            for ent in upstream:
+                close_ok = ha_call("switch", "turn_off", entity_id=ent) and close_ok
             # Only a definitive OFF is safe, including pump/mainline read-back.
-            closed = self._confirm_switches((valve, hw["mainline"], hw["pump"]), "off")
+            closed = self._confirm_switches((valve, *upstream), "off")
             if not close_ok or not closed:
-                ha_call("switch", "turn_off", entity_id=hw["pump"])
-                ha_call("switch", "turn_off", entity_id=hw["mainline"])
+                for ent in reversed(upstream):
+                    ha_call("switch", "turn_off", entity_id=ent)
                 self._latch_hardware_fault(
                     room, f"zone {zone} valve/pump/mainline close not confirmed"
                 )

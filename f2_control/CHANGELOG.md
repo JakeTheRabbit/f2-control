@@ -1,3 +1,13 @@
+# 0.15.0
+
+Pair with integration 2.18.0. Existing options, engine flags, room IDs, counters and learned state are kept.
+Updating from 0.14.0 resumes by itself; no kill-switch cycle is needed.
+
+- A zone needs only its valve. Pump and main-line valve are optional, so a room with one smart plug or solenoid per zone irrigates. Lead times are skipped with the hardware they belong to; the close read-back and the hardware-fault latch cover whatever the room has. Three-switch rooms run exactly as before.
+- The source-water EC probe may report µS/cm; it is converted to mS/cm before the sanity range and the gate. Previously such a probe read as out of range and the gate blocked every shot without saying why.
+- The Cloudflare judge manages P2. With Auto Setpoints on and `cf_account_id` + `cf_api_token` set, `typesafe/jev` is asked once per clock hour during P2 (lights on, no dated plan). It may move the zone's `p2_shot_size` within 1-4 % and hold the working peak within 2 points of the learned one: one bounded step per lever per grow-day. A tripped guard, a low-confidence answer, or no answer in 5 s changes nothing; irrigation never waits on it. Status attributes `jev_last`, `jev_changed_today`, `working_peak_adjust`.
+- Bundles the 2.18.0 dashboard (setup helpers in Rooms & setup).
+
 # 0.14.0
 
 Pair with integration 2.17.0. Existing options, engine flags, room IDs, counters and learned state are kept.

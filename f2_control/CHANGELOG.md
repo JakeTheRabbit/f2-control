@@ -1,3 +1,36 @@
+# 0.16.2
+
+Pair with integration 2.19.2. **C3.** Found on the first real install (a one-zone tent); the fixes themselves were not run on hardware before release.
+
+- **Zones are never invented.** Started before the integration was set up, the controller fell back to the shipped `num_zones: 3` and reported zones 2 and 3 of a one-zone tent as "no hardware mapped". It now has no zones until a room exists, checks every loop, and picks the room up by itself: no restart needed. The log says so: *"the Crop Steering integration has not published a room yet..."*. `num_zones` is still the fallback when Home Assistant cannot be reached at start, and a hand-mapped `hardware` option still keeps its zone count. A state file that already holds the phantom zones loads as before.
+- **Switch-on is no longer an irrigation event.** New switch-on timestamps are explicitly marked by `last_shot_is_anchor` and published as `unknown` until an irrigation is recorded, also for a room that is off. An old file without the flag keeps its timestamp: zero daily counters or missing history cannot establish whether an old timestamp was switch-on or irrigation. Electrical operation alone does not prove water delivery.
+- Final review fixes keep the descriptor's complete zone list when HA sensors appear gradually, preserve old irrigation timestamps after daily rollover, and keep legacy numeric-string/malformed excluded-volume state loadable. Regression tests cover each case.
+- The dashboard served by the app is the 2.19.2 build (the side menu scrolls on small screens).
+- No change to add-on options. No change to what a working install waters, or when.
+
+# 0.16.1
+
+Pair with integration 2.19.1. Not run on hardware before release.
+
+- The controller reports its own version: `controller_version` in every room's `ai_heartbeat`, and in the first log line (`f2-control 0.16.x starting | rooms ...`). The dashboard's sidebar shows it next to the integration's. It is read from the `config.yaml` the image was built from (copied in as `/app/addon.yaml`), so there is no second number to keep in step.
+- No change to irrigation behaviour, options or the state file.
+
+# 0.16.0
+
+Pair with integration 2.19.0. **C3.** Released without a staging soak by decision of its two operators; not run on hardware before release.
+
+- A room can DECLARE its plumbing (`plumbing` in the engine descriptor, set in the integration's setup). Declared: the mapped pump and main-line have to match it, or the room is held with a reason, nothing opens and nothing is counted. This closes the 2.18.0 case where a pumped room with no pump mapped was watered with the valve open and no pump, and the shot counted as delivered.
+- **Never declared (every existing install): no change**, and no disarm cycle after the update. The layout joins the saved setup fingerprint only when it is present, so the fingerprint 0.15.x saved still matches.
+- A layout this controller does not know (a newer integration) is held, not guessed.
+- No change to add-on options or to the state file.
+
+# 0.15.2
+
+Pair with integration 2.18.1. No change to irrigation behaviour, options or saved state.
+
+- Test seam: the state file location can be overridden with the `F2_STATE_PATH` environment variable. **Unset, as on every install, it is `/data/state.json` exactly as before.** The constructor reads that file, and on adopting a setup writes it, before a test can redirect it; GitHub runners have no `/data`, so CI never noticed, but on any machine where `/data` exists and is writable (a devcontainer, this add-on's own container) the test suite wrote a real file there and leaked it into the next test.
+- Bundles nothing new; the dashboard is the 2.18.0 build.
+
 # 0.15.1
 
 - A room switched off stays off while Home Assistant restarts. The room's on/off switch reads unavailable for a moment during a core restart, and unavailable used to mean on: an empty room began a fresh run and raised its probe alerts again. The controller now keeps the last value it read (also across its own restart) and only treats a switch it has never seen as on, which is what keeps integrations older than the switch watering.

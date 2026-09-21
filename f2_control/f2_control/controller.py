@@ -21,6 +21,7 @@ auto-injected SUPERVISOR_TOKEN. Safe-offs the hardware on exit.
 import json
 import math
 import os
+import re
 import signal
 import sys
 import time
@@ -120,8 +121,82 @@ def load_options():
     return opts
 
 
+def read_controller_version(module_dir=None):
+    """This app's own version, from the config.yaml it was BUILT from: the very file Supervisor
+    reads, so there is no second number to keep in step. The Dockerfile copies it next to this
+    module as addon.yaml; in a source checkout it is one directory up. "unknown" rather than a
+    guess when neither is readable."""
+    here = module_dir or os.path.dirname(os.path.abspath(__file__))
+    for path in (os.path.join(here, "addon.yaml"), os.path.join(here, os.pardir, "config.yaml")):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                found = re.search(r"""^version:\s*["']?([^"'\s#]+)""", fh.read(), re.M)
+        except OSError:
+            continue
+        if found:
+            return found.group(1)
+    return "unknown"
+
+
+CONTROLLER_VERSION = read_controller_version()
+
 # Switch read-back after a close: see Controller._confirm_switches.
 CONFIRM_FIRST_READ_S, CONFIRM_POLL_S, CONFIRM_TIMEOUT_S = 1.0, 0.5, 6.0
+
+# How a room is plumbed, as DECLARED in the integration's setup and published as the descriptor's
+# `plumbing`: layout -> (has a pump switch, has a main-line valve). The integration carries the same
+# table (custom_components/crop_steering/plumbing.py); tests/test_plumbing.py pins the two together.
+PLUMBING_LAYOUTS = {
+    "valves_only": (False, False),
+    "pump_valves": (True, False),
+    "mainline_valves": (False, True),
+    "pump_mainline_valves": (True, True),
+}
+
+
+def with_plumbing(hw, descriptor):
+    """Carry a declared layout into a room's hardware map. A room that never declared one keeps
+    exactly the map it always had, so an install from before declared plumbing behaves (and
+    fingerprints) as it did."""
+    if (descriptor or {}).get("plumbing"):
+        hw["plumbing"] = descriptor["plumbing"]
+    return hw
+
+
+def plumbing_hold(hw):
+    """Why a room must not be watered given the plumbing it DECLARED, or None.
+
+    Undeclared (every install set up before this existed): None - pump and main-line are used when
+    mapped and skipped when not, as before. Declared: the switches have to match the declaration.
+    Without this, a pumped room whose pump mapping was cleared (or lost) looked exactly like a
+    one-switch tent: the valve opened, no pump ran, and the shot was counted as delivered while
+    the plants got nothing. A declaration turns that silent dry run into a hold with a reason.
+    """
+    layout = (hw or {}).get("plumbing")
+    if not layout:
+        return None
+    needs = PLUMBING_LAYOUTS.get(layout)
+    if needs is None:
+        return (
+            f"setup declares a plumbing layout this controller does not know ({layout!r}) - not "
+            "watering on a guess; update the controller app to match the integration"
+        )
+    for key, needed, label in (
+        ("pump", needs[0], "pump"),
+        ("mainline", needs[1], "main-line valve"),
+    ):
+        mapped = bool(hw.get(key))
+        if needed and not mapped:
+            return (
+                f"setup says this room has a {label}, but no {label} switch is mapped - not watering "
+                f"without it; map the {label} in the Crop Steering setup, or change the room's plumbing"
+            )
+        if mapped and not needed:
+            return (
+                f"setup says this room has no {label}, but a {label} switch is mapped ({hw[key]}) - "
+                "not watering until they agree; clear it, or change the room's plumbing"
+            )
+    return None
 
 
 class Room:
@@ -198,7 +273,10 @@ class Controller:
         )  # generic last-resort fallback — real volume read live from the integration
         self._opt_lon = float(o.get("lights_on_hour", 10))
         self._opt_loff = float(o.get("lights_off_hour", 22))
-        self._state_path = "/data/state.json"
+        # Live installs always use /data/state.json (HA-managed, survives Rebuild). The env
+        # override exists so a test/dev rig can redirect the file BEFORE this constructor's
+        # own _load_state()/adoption pass reads and writes it.
+        self._state_path = os.environ.get("F2_STATE_PATH") or "/data/state.json"
         self._busy = False
         self._alerted = {}
         self._fused_id_cache = (
@@ -226,33 +304,25 @@ class Controller:
         # Sensors are owned by the INTEGRATION: it fuses every probe you map to a zone
         # into sensor.crop_steering_vwc_zone_N / _ec_zone_N; the engine reads those.
         desc = self._default_descriptor()
+        self._options = o
+        self._default_provisional = False
         zones_opt = o.get("zones")
         if zones_opt:
             zones = {int(k): v for k, v in zones_opt.items()}
         else:
-            # auto-detect zone count from the integration's fused sensors (configure once);
-            # fall back to the descriptor/option if HA isn't reachable yet at startup.
-            n = self._detect_zones(
-                "", int(o.get("num_zones", desc.get("num_zones") or 3))
-            )
-            zones = {
-                z: {
-                    "vwc": f"sensor.crop_steering_vwc_zone_{z}",
-                    "ec": f"sensor.crop_steering_ec_zone_{z}",
-                }
-                for z in range(1, n + 1)
-            }
+            zone_ids, self._default_provisional = self._default_zone_ids(o, desc)
+            zones = self._default_zone_map(zone_ids)
         hw = o.get("hardware")
         if not hw:
             valves = {int(k): v for k, v in (desc.get("valves") or {}).items() if v}
             if valves:
                 # A zone needs its valve. Pump and mainline are used when mapped and skipped when
                 # not: a tent with one smart plug is a complete room (see _execute_shot).
-                hw = {
+                hw = with_plumbing({
                     "pump": desc.get("pump") or None,
                     "mainline": desc.get("mainline") or None,
                     "valves": valves,
-                }
+                }, desc)
             else:
                 # unmapped — _blocked() holds every zone and alerts until it's configured
                 hw = {"pump": None, "mainline": None, "valves": {}}
@@ -275,7 +345,14 @@ class Controller:
             opt_lon=self._opt_lon,
             opt_loff=self._opt_loff,
         )
-        if not default_room.hw.get("valves"):
+        if self._default_provisional and not default_room.zones:
+            log(
+                "config: the Crop Steering integration has not published a room yet, so there is "
+                "nothing to drive. Add it in Home Assistant (Settings > Devices & services > Add "
+                "integration > Crop Steering). This controller checks every loop and picks the room "
+                "up by itself: no restart needed."
+            )
+        elif not default_room.hw.get("valves"):
             log(
                 "config: default room has NO hardware mapped — holding safe. Map each zone's valve "
                 "(and the pump and mainline, if the room has them) in the Crop Steering integration "
@@ -321,6 +398,49 @@ class Controller:
             log(
                 f"config: {tag}feed gate EC={room.feed_ec_sensor} pH={room.feed_ph_sensor}"
             )
+
+    @staticmethod
+    def _default_zone_map(zone_ids):
+        return {
+            z: {
+                "vwc": f"sensor.crop_steering_vwc_zone_{z}",
+                "ec": f"sensor.crop_steering_ec_zone_{z}",
+            }
+            for z in zone_ids
+        }
+
+    def _default_zone_ids(self, options, descriptor):
+        """Which zones the default room has -> (zone ids, provisional).
+
+        `provisional` means the answer is only a stand-in because the integration could not be
+        asked yet; the room is then re-resolved every loop until it can (see _rediscover).
+
+        The `num_zones` option (default 3) is documented as "only used if Home Assistant isn't
+        reachable at startup". It was ALSO used when Home Assistant was up and the integration
+        simply had not been set up yet, which is every first install where the app is started
+        first: a one-zone tent got zones 2 and 3 that do not exist, each reporting "no hardware
+        mapped", until the new setup happened to be adopted. Nothing is invented now.
+        """
+        # The descriptor owns the zone list. Sensors can appear one at a time while HA starts,
+        # and retired sensors can outlive their zones; neither should redefine a configured room.
+        if descriptor:
+            ids = descriptor.get("active_zone_ids")
+            if isinstance(ids, list) and ids and all(type(z) is int and 1 <= z <= 64 for z in ids):
+                return sorted(ids), False
+            count = int(descriptor.get("num_zones") or len(descriptor.get("valves") or {}) or 0)
+            if count:
+                return list(range(1, count + 1)), False
+        n = self._detect_zones("", 0)
+        if n:
+            # Without a descriptor this may still be a partial startup inventory. Keep checking
+            # until the room definition arrives, unless the operator supplied the hardware map.
+            return list(range(1, n + 1)), not bool(options.get("hardware"))
+        fallback = list(range(1, int(options.get("num_zones", 3)) + 1))
+        if options.get("hardware"):  # hand-mapped in the app options: their zone count stands
+            return fallback, False
+        if ha_get_all():  # Home Assistant answers, and there is no room in it yet
+            return [], True
+        return fallback, True  # Home Assistant unreachable: the documented fallback, for now
 
     def _default_enable_flag(self, options, descriptor):
         legacy = "input_boolean.f2_control_enabled"
@@ -381,11 +501,11 @@ class Controller:
                     }
                     for z in a.get("active_zone_ids", range(1, num + 1))
                 }
-                hw = {
+                hw = with_plumbing({
                     "pump": a.get("pump"),
                     "mainline": a.get("mainline"),
                     "valves": valves,
-                }
+                }, a)
                 if not (valves and zones):
                     log(
                         f"room '{a.get('slug')}' engine_config incomplete — skipped (no zone valves or zones)"
@@ -423,6 +543,9 @@ class Controller:
             "peak": 0.0,
             "win": [],
             "last_shot": None,
+            # True while `last_shot` is only the moment the room was switched on (the timers count
+            # from it) and no water has been delivered since: it must never be shown as an irrigation.
+            "last_shot_is_anchor": False,
             "shots": 0,
             "daily_vol": 0.0,
             "ec_smooth": None,
@@ -462,6 +585,13 @@ class Controller:
                     s[k] = datetime.fromisoformat(d[k])
                 except (ValueError, TypeError):
                     pass
+        if isinstance(d.get("last_shot_is_anchor"), bool):
+            s["last_shot_is_anchor"] = d["last_shot_is_anchor"]
+        else:
+            # Old files do not distinguish an irrigation from a switch-on stamp. Daily counters
+            # reset and water history expires (or predates its introduction), so no recorded water
+            # cannot prove this was an anchor. Preserve the timestamp the prior version published.
+            s["last_shot_is_anchor"] = False
         if d.get("last_daily_reset"):
             try:
                 s["last_daily_reset"] = date.fromisoformat(d["last_daily_reset"])
@@ -545,15 +675,31 @@ class Controller:
         self._last_discovery = now
         # (1) resolve the default room's hardware/zones if it started unmapped (HA was down)
         default = self.rooms[0]
+        if default.slug == "default" and getattr(self, "_default_provisional", False):
+            desc = self._default_descriptor()
+            zone_ids, self._default_provisional = self._default_zone_ids(self._options, desc)
+            if set(zone_ids) != set(default.zones):
+                was = sorted(default.zones)
+                default.zones = self._default_zone_map(zone_ids)
+                self._load_room_state(default)
+                log(f"config: default room zones resolved: {was or 'none'} -> {sorted(zone_ids) or 'none'}")
+            if desc:
+                default.enable_flag = self._default_enable_flag(self._options, desc)
+                default.feed_ec_sensor = (
+                    self._options.get("feed_ec_sensor") or desc.get("feed_ec_sensor") or ""
+                ).strip()
+                default.feed_ph_sensor = (
+                    self._options.get("feed_ph_sensor") or desc.get("feed_ph_sensor") or ""
+                ).strip()
         if default.slug == "default" and not default.hw.get("valves"):
             desc = self._default_descriptor()
             valves = {int(k): v for k, v in (desc.get("valves") or {}).items() if v}
             if valves:
-                default.hw = {
+                default.hw = with_plumbing({
                     "pump": desc.get("pump") or None,
                     "mainline": desc.get("mainline") or None,
                     "valves": valves,
-                }
+                }, desc)
                 if not default.zones:
                     n = self._detect_zones(
                         "", int(desc.get("num_zones") or len(valves))
@@ -588,19 +734,21 @@ class Controller:
         zone_ids = attrs.get(
             "active_zone_ids", list(range(1, int(attrs.get("num_zones", 0)) + 1))
         )
-        return json.dumps(
-            {
-                "active": attrs.get("active", True),
-                "zones": sorted(zone_ids),
-                "pump": attrs.get("pump"),
-                "mainline": attrs.get("mainline"),
-                "valves": {str(k): v for k, v in (attrs.get("valves") or {}).items()},
-                "enable_flag": attrs.get("enable_flag") or room.enable_flag,
-                "feed_ec_sensor": attrs.get("feed_ec_sensor") or "",
-                "feed_ph_sensor": attrs.get("feed_ph_sensor") or "",
-            },
-            sort_keys=True,
-        )
+        adopted = {
+            "active": attrs.get("active", True),
+            "zones": sorted(zone_ids),
+            "pump": attrs.get("pump"),
+            "mainline": attrs.get("mainline"),
+            "valves": {str(k): v for k, v in (attrs.get("valves") or {}).items()},
+            "enable_flag": attrs.get("enable_flag") or room.enable_flag,
+            "feed_ec_sensor": attrs.get("feed_ec_sensor") or "",
+            "feed_ph_sensor": attrs.get("feed_ph_sensor") or "",
+        }
+        # Only when declared: a room that never declared its plumbing must keep the fingerprint
+        # it saved before this field existed, or the update would strand it behind a disarm cycle.
+        if attrs.get("plumbing"):
+            adopted["plumbing"] = attrs["plumbing"]
+        return json.dumps(adopted, sort_keys=True)
 
     def _apply_setup_descriptors(self):
         """Adopt explicit versioned setup changes only after both maps are safe OFF.
@@ -655,11 +803,11 @@ class Controller:
                 ):
                     raise ValueError("Invalid setup active zone list")
                 valves = {int(k): v for k, v in (attrs.get("valves") or {}).items()}
-                desired_hw = {
+                desired_hw = with_plumbing({
                     "pump": attrs.get("pump"),
                     "mainline": attrs.get("mainline"),
                     "valves": valves,
-                }
+                }, attrs)
                 desired_flag = attrs.get("enable_flag") or room.enable_flag
                 hardware = set(self._hardware_entities(room)) | {
                     v
@@ -753,6 +901,7 @@ class Controller:
             "ec_integral": float(s.get("ec_integral") or 0.0),
             "ec_prev_err": float(s.get("ec_prev_err") or 0.0),
             "last_shot": ls.isoformat() if isinstance(ls, datetime) else None,
+            "last_shot_is_anchor": bool(s.get("last_shot_is_anchor")),
             "last_phase_change": lpc.isoformat() if isinstance(lpc, datetime) else None,
             "last_ec_steer": les.isoformat() if isinstance(les, datetime) else None,
             "last_daily_reset": ldr.isoformat() if isinstance(ldr, date) else None,
@@ -1291,6 +1440,7 @@ class Controller:
                 **self._fresh_zone(),
                 "phase": "P3",
                 "last_shot": datetime.now(),  # the blind-probe schedule counts from switch-on, not from "never"
+                "last_shot_is_anchor": True,  # ...but it is not an irrigation, and is never shown as one
                 "water_history": old.get("water_history"),
                 "water_history_legacy_excluded_l": old.get("water_history_legacy_excluded_l", 0.0),
             }
@@ -1303,6 +1453,8 @@ class Controller:
             "healthy",
             {
                 "engine": "f2-control",
+                # which controller is actually RUNNING, for the dashboard's sidebar
+                "controller_version": CONTROLLER_VERSION,
                 "last_beat": now.isoformat(),
                 # the kill switch this room ACTUALLY uses — the integration's health
                 # check reads this so a custom enable_flag isn't flagged as "missing"
@@ -1327,6 +1479,11 @@ class Controller:
             for zone in room.zones:
                 ha_set(f"sensor.crop_steering_{px}zone_{zone}_status", "Room off",
                        {"reason": "Room off (nothing growing)"})
+                if room.state.get(zone, {}).get("last_shot_is_anchor"):
+                    # a room switched on and off again without watering: take back the false
+                    # "last irrigation" an earlier controller published for it
+                    ha_set(f"sensor.crop_steering_{px}zone_{zone}_last_irrigation_app", "unknown",
+                           {"device_class": "timestamp"})
             ha_set(f"sensor.crop_steering_{px}app_status", "room_off",
                    {"engine": "f2-control", "updated": now.isoformat()})
             ha_set(f"sensor.crop_steering_{px}current_decision", "Room off - nothing growing",
@@ -1355,6 +1512,14 @@ class Controller:
                 "no hardware mapped — set this zone's valve (and the pump and mainline, if the room "
                 "has them) in the Crop Steering integration (or the add-on `hardware` option)"
             )
+        plumbing = plumbing_hold(hw)
+        if plumbing:
+            self._alert(
+                f"plumbing_{room.slug}",
+                "Irrigation BLOCKED - plumbing and switches disagree",
+                f"{room.slug}: {plumbing}.",
+            )
+            return plumbing
         if not self._on(room.enable_flag, False):
             return "f2-control disabled (kill switch off)"
         if not self._on(f"switch.crop_steering_{room.prefix}system_enabled", False):
@@ -1504,6 +1669,7 @@ class Controller:
         auto_setpoints.shot(st["learn"], st.get("phase"), size_pct, st.get("last_vwc"), now.timestamp())
         st["shots"] += 1
         st["last_shot"] = now
+        st["last_shot_is_anchor"] = False  # water was delivered: this one is an irrigation
         st["daily_vol"] += delivered_l
         self._save_state()
 
@@ -1670,6 +1836,10 @@ class Controller:
 
     def _execute_shot(self, room, zone, duration_s, size_pct, *, flow_lps=None):
         if self._hardware_fault_block(room):
+            return
+        plumbing = plumbing_hold(room.hw)
+        if plumbing:  # never open a valve on a room whose declared pump is not there to run
+            log(f"[{room.slug}] Z{zone} shot held: {plumbing}")
             return
         strategy_hold = self._strategy_preflight(room, zone, datetime.now())
         if strategy_hold:
@@ -1952,7 +2122,10 @@ class Controller:
             return
         self._recover_hardware_faults()
         self._defaulted_this_loop = set()
-        if (now - self._last_discovery).total_seconds() >= self.rediscover_seconds:
+        if (
+            getattr(self, "_default_provisional", False)
+            or (now - self._last_discovery).total_seconds() >= self.rediscover_seconds
+        ):
             try:
                 self._rediscover(now)
             except Exception as e:
@@ -2302,7 +2475,10 @@ class Controller:
                         f"sensor.crop_steering_{px}zone_{zone}_last_irrigation_app",
                         # Internal times stay local-naive; publish the event's local
                         # UTC offset, including historical daylight-saving changes.
-                        ls.astimezone().isoformat(),
+                        # The switch-on stamp is NOT an irrigation: say "unknown", which also
+                        # overwrites the false time an earlier controller left in Home Assistant.
+                        "unknown" if room.state[zone].get("last_shot_is_anchor")
+                        else ls.astimezone().isoformat(),
                         {"device_class": "timestamp"},
                     )
                 # Daily volume fed + shot count today — the dashboard's "Volume fed vs cap"
@@ -2504,7 +2680,7 @@ class Controller:
 
     def run(self):
         log(
-            "starting | rooms",
+            f"f2-control {CONTROLLER_VERSION} starting | rooms",
             ", ".join(r.slug for r in self.rooms),
             "| notify",
             self.notify_service or "(none)",

@@ -1,39 +1,16 @@
-# Crop Steering Controller for Home Assistant
+# f2-control — retired
 
-The companion irrigation controller for [Crop Steering](https://github.com/JakeTheRabbit/HA-Irrigation-Strategy). This repository supports existing Home Assistant app installations and receives the matching controller release.
+This repository is archived and gets no more releases.
 
-**[Try the interactive demo](https://jaketherabbit.github.io/HA-Irrigation-Strategy/dashboard.html?demo=1)** · **[Install and upgrade guide](https://github.com/JakeTheRabbit/HA-Irrigation-Strategy/blob/main/docs/INSTALL.md)**
+The Crop Steering controller app is now installed only from
+**[JakeTheRabbit/HA-Irrigation-Strategy](https://github.com/JakeTheRabbit/HA-Irrigation-Strategy)**
+(`addons/f2_control`). This repository was a published copy of that folder.
 
-![Native Crop Steering workspace](https://raw.githubusercontent.com/JakeTheRabbit/HA-Irrigation-Strategy/main/img/operator-dashboard.png)
+**Installed the controller from here?** Move it once: install the app from HA-Irrigation-Strategy,
+copy the old app's options and its `/data/state.json` across (it holds each zone's phase, today's
+counters, the accepted setup and what Auto Setpoints has learned), then uninstall this one. Never run
+both at the same time: they would drive the same pump and valves. Step-by-step:
+[docs/INSTALL.md — Moving a controller installed from f2-control](https://github.com/JakeTheRabbit/HA-Irrigation-Strategy/blob/main/docs/INSTALL.md#moving-a-controller-installed-from-f2-control).
 
-## Install
-
-1. [Install the Crop Steering integration through HACS](https://my.home-assistant.io/redirect/hacs_repository/?owner=JakeTheRabbit&repository=HA-Irrigation-Strategy&category=integration), then restart Home Assistant and add Crop Steering in Devices & services.
-2. [Add this controller app repository](https://my.home-assistant.io/redirect/supervisor_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2FJakeTheRabbit%2Ff2-control). Install **Crop Steering Controller**, review its options and start it.
-3. Open **Crop Steering** in the sidebar. Use **Rooms & setup** to map each room's pump, mainline, valves and probes, then enter pot size, plant count and dripper output. The controller adopts the integration's mapping.
-4. Check fresh sensor readings, controller heartbeat, current setpoints and safety holds. Commission actual water delivery before enabling irrigation.
-
-Integration **2.16.0** pairs with controller **0.13.2**. Home Assistant OS/Supervised provides the app store and internal authentication. No token needs to be committed to a file.
-
-## Upgrade an existing controller
-
-Use **Update** on the controller you already installed. Keep its repository and app identity so Supervisor preserves `/data/state.json`, options and counters. Installing another copy from the main project repository creates a separate controller instance.
-
-Update the companion integration as well and restart Home Assistant. A plain controller restart reuses the old image; a published Update or local-source Rebuild loads the new code. Verify versions, heartbeat and restored settings afterwards. Do not re-enter defaults over your current setpoints.
-
-Feed EC/pH sources and hold entities remain installation-specific options. Empty feed-probe mappings disable those particular gates; map your own reservoir probes to use them. Weekly water is a controller delivery estimate, with partial-history coverage after upgrade, rather than measured flow.
-
-The workspace now previews manual edits on a combined VWC/EC graph, compares recorded runs against daily target references, and separates zone water, average per-plant water and substrate capacity. Runtime estimates include controller limits; historical delivery totals are preserved.
-
-Save user-authored plans in the browser's room-scoped Recipe library and load them as reviewed local drafts. Older installations' maximum-shot-duration entity names are supported without changing entity IDs.
-
-The overview includes graphical tank/pump status and last irrigation events. The public demo includes synthetic recipes and prior runs. An optional [local MCP connector](https://github.com/JakeTheRabbit/HA-Irrigation-Strategy/blob/main/docs/MCP.md) supports LLM-assisted configuration.
-
-## Source and documentation
-
-This repository contains the packaged controller. Development happens in [HA-Irrigation-Strategy](https://github.com/JakeTheRabbit/HA-Irrigation-Strategy); release tooling copies only tracked runtime files and the current dashboard.
-
-- [Controller changelog](f2_control/CHANGELOG.md)
-- [Controller operation](f2_control/DOCS.md)
-- [Whole-grow planning](https://github.com/JakeTheRabbit/HA-Irrigation-Strategy/blob/main/docs/GROW_PLANS.md)
-- [Validated features and limits](https://github.com/JakeTheRabbit/HA-Irrigation-Strategy/blob/main/docs/FEATURE_MATRIX.md)
+The last release published here was controller **0.16.2**, identical to `addons/f2_control` at
+HA-Irrigation-Strategy `v2.19.2`.
